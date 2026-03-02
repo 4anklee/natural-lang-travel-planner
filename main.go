@@ -15,6 +15,8 @@ func main() {
 		log.Println("No .env file found; falling back to environment variables")
 	}
 
+	InitOpenAI()
+
 	db, err := InitDB()
 	if err != nil {
 		log.Fatal(err)

@@ -1,115 +1,17 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"time"
+
+	"github.com/openai/openai-go/v3"
 )
 
-var httpClient = &http.Client{Timeout: 30 * time.Second}
+var client openai.Client
 
-type ChatReq struct {
-	Model       string `json:"model"`
-	Messages    []struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	} `json:"messages"`
-	Temperature float64 `json:"temperature,omitempty"`
-	MaxTokens   int     `json:"max_tokens,omitempty"`
-	Stream      bool    `json:"stream,omitempty"`
-}
-
-func chat(model string, messages [][2]string, maxTokens int) (string, error) {
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		return "", fmt.Errorf("OPENAI_API_KEY not set")
-	}
-
-	reqBody := ChatReq{Model: model, Temperature: 0, MaxTokens: maxTokens}
-	for _, m := range messages {
-		reqBody.Messages = append(reqBody.Messages, struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		}{Role: m[0], Content: m[1]})
-	}
-
-	b, _ := json.Marshal(reqBody)
-	req, _ := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewBuffer(b))
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var result map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-
-	choices, ok := result["choices"].([]any)
-	if !ok || len(choices) == 0 {
-		return "", fmt.Errorf("no choices returned")
-	}
-	msg := choices[0].(map[string]any)["message"].(map[string]any)
-	return msg["content"].(string), nil
-}
-
-func chatStream(model string, messages [][2]string, w io.Writer) error {
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		return fmt.Errorf("OPENAI_API_KEY not set")
-	}
-
-	reqBody := ChatReq{Model: model, Temperature: 0, Stream: true}
-	for _, m := range messages {
-		reqBody.Messages = append(reqBody.Messages, struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		}{Role: m[0], Content: m[1]})
-	}
-
-	b, _ := json.Marshal(reqBody)
-	req, _ := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewBuffer(b))
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" || line == "data: [DONE]" {
-			continue
-		}
-		if len(line) > 6 && line[:6] == "data: " {
-			var chunk struct {
-				Choices []struct {
-					Delta struct {
-						Content string `json:"content"`
-					} `json:"delta"`
-				} `json:"choices"`
-			}
-			if err := json.Unmarshal([]byte(line[6:]), &chunk); err != nil {
-				continue
-			}
-			if len(chunk.Choices) > 0 {
-				fmt.Fprint(w, chunk.Choices[0].Delta.Content)
-			}
-		}
-	}
-	return scanner.Err()
+func InitOpenAI() {
+	client = openai.NewClient()
 }
 
 func GenerateSQL(question, schema string) (string, error) {
@@ -123,10 +25,23 @@ Rules:
 
 	user := fmt.Sprintf("Schema:\n%s\n\nQuestion:\n%s", schema, question)
 
-	return chat("gpt-4.1-nano", [][2]string{
-		{"system", sys},
-		{"user", user},
-	}, 300)
+	completion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+		Model:       "gpt-4.1-nano",
+		Temperature: openai.Float(0),
+		MaxTokens:   openai.Int(300),
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage(sys),
+			openai.UserMessage(user),
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if len(completion.Choices) == 0 {
+		return "", fmt.Errorf("no choices returned")
+	}
+	return completion.Choices[0].Message.Content, nil
 }
 
 func GenerateAnswer(question, sqlText, rowsJSON string) error {
@@ -139,8 +54,20 @@ Be concise: 2-5 sentences max.`
 		question, sqlText, rowsJSON,
 	)
 
-	return chatStream("gpt-4.1-nano", [][2]string{
-		{"system", sys},
-		{"user", user},
-	}, os.Stdout)
+	stream := client.Chat.Completions.NewStreaming(context.TODO(), openai.ChatCompletionNewParams{
+		Model:       "gpt-4.1-nano",
+		Temperature: openai.Float(0),
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage(sys),
+			openai.UserMessage(user),
+		},
+	})
+
+	for stream.Next() {
+		chunk := stream.Current()
+		if len(chunk.Choices) > 0 {
+			fmt.Fprint(os.Stdout, chunk.Choices[0].Delta.Content)
+		}
+	}
+	return stream.Err()
 }
