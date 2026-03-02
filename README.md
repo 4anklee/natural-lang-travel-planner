@@ -63,6 +63,45 @@ The cheapest flight to Tokyo costs $450, departing on 2025-06-15 with a return o
 
 Type `exit` to quit.
 
+## Sample: Successful Query
+
+> **Question:** "Which city has the lowest daily food cost?"
+
+```sql
+SELECT name, country, avg_daily_food_cost
+FROM City
+ORDER BY avg_daily_food_cost ASC
+LIMIT 1;
+```
+
+> **Answer:** Hanoi in Vietnam has the lowest daily food cost at $18.
+
+The model correctly identified the right column, applied ordering, and limited to one result.
+
+## Sample: Failed Query
+
+> **Question:** "Show me all attractions in Tokyo that are free"
+
+```sql
+SELECT * FROM Attraction WHERE city_id = (SELECT city_id FROM City WHERE name = 'Tokyo') AND price = 0;
+```
+
+> **Answer:** I couldn't find any free attractions in Tokyo in the database. You might want to try a different query or check for attractions with different criteria.
+
+The SQL was technically correct, but the database had no attractions with `price = 0`. This shows the model generates valid SQL but can't know what data actually exists.
+
+## Prompting Strategies
+
+Based on the paper [How to Prompt LLMs for Text-to-SQL](https://arxiv.org/abs/2305.11853), we experimented with the following strategies:
+
+1. **Zero-shot prompting** — We provide the schema and question with no examples. This is our current approach. The model generates correct SQL for straightforward queries (joins, filters, aggregations) but occasionally hallucinates columns or misinterprets ambiguous questions.
+
+2. **Instruction-based prompting** — We add explicit rules in the system prompt (e.g., "Output ONLY SQL", "Only SELECT queries", date format hints). This noticeably reduced formatting issues and prevented the model from returning explanations alongside SQL.
+
+3. **Few-shot prompting** — This strategy includes example question-SQL pairs in the prompt so the model can learn the expected format. We did not implement this, but it would likely improve accuracy on complex multi-join queries where the model needs to see how tables relate.
+
+**Observations:** Adding schema-aware instructions (strategy 2) made the biggest difference — without them, the model would sometimes wrap SQL in markdown or add commentary. Zero-shot worked surprisingly well for simple queries but struggled with multi-join questions.
+
 ## Project Structure
 
 ```
